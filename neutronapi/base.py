@@ -705,6 +705,10 @@ class API:
         self, scope: Scope, receive: Receive, send: Send, **kwargs
     ) -> None:
         """Enhanced handle method with form data support and raw body storage."""
+        # Dispatch websocket connections to separate handler
+        if scope["type"] == "websocket":
+            return await self.handle_websocket(scope, receive, send, **kwargs)
+
         try:
             scope = await self._process_client_params(scope)
             method = scope["method"]
@@ -808,6 +812,32 @@ class API:
                 status_code=getattr(e, "status_code", 500),
             )
             return await response(scope, receive, send)
+
+    async def handle_websocket(
+        self, scope: Scope, receive: Receive, send: Send, **kwargs
+    ) -> None:
+        """Handle websocket connections."""
+        path = scope["path"].rstrip("/")
+
+        try:
+            (
+                handler,
+                kwargs,
+                permission_classes,
+                throttle_classes,
+                _,
+                _,
+                _,
+            ) = await self.match(path, "WEBSOCKET")
+        except exceptions.NotFound:
+            await send({"type": "websocket.close", "code": 4004})
+            return
+
+        if handler is None:
+            await send({"type": "websocket.close", "code": 4004})
+            return
+
+        await handler(scope, receive, send, **kwargs)
 
     async def _parse_multipart(self, body: bytes, content_type: str) -> Dict:
         """Parse multipart form data."""
