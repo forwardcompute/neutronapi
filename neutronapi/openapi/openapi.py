@@ -498,10 +498,12 @@ class OpenAPIGenerator:
     def _generate_operation_id(
         self, api: API, handler: callable, method: str, name: Optional[str]
     ) -> str:
-        """Generate a unique operation ID."""
-        api_name = api.name or api.__class__.__name__.replace("API", "").lower()
-        operation_name = name or handler.__name__
-        return f"{api_name}_{operation_name}_{method.lower()}"
+        """Generate a unique operation ID.
+
+        Produces clean operationIds like 'create_user' instead of
+        'users_create_user_post', which results in cleaner SDK method names.
+        """
+        return name or handler.__name__
 
     def _generate_responses(
         self, api: API, handler: callable, method: str
