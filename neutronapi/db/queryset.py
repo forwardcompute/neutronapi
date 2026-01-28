@@ -360,11 +360,18 @@ class QuerySet(Generic[T]):
             qs = self.order_by(f'-{order_field}').limit(1)
         else:
             reversed_order = []
-            for order in self._order_by:
-                if order.endswith(' DESC'):
-                    reversed_order.append(order.replace(' DESC', ' ASC'))
+            for order_item in self._order_by:
+                if isinstance(order_item, dict):
+                    # New dictionary format: {'field': ..., 'direction': ...}
+                    new_item = order_item.copy()
+                    new_item['direction'] = 'ASC' if order_item['direction'] == 'DESC' else 'DESC'
+                    reversed_order.append(new_item)
                 else:
-                    reversed_order.append(order.replace(' ASC', ' DESC'))
+                    # Legacy string format (backwards compatibility)
+                    if order_item.endswith(' DESC'):
+                        reversed_order.append(order_item.replace(' DESC', ' ASC'))
+                    else:
+                        reversed_order.append(order_item.replace(' ASC', ' DESC'))
             qs = self._clone()
             qs._order_by = reversed_order
             qs = qs.limit(1)
@@ -729,7 +736,22 @@ class QuerySet(Generic[T]):
                                     placeholders = ', '.join(
                                         [f'${i}' for i in range(param_counter, param_counter + len(converted_values))])
 
-                                condition = f"{field_name} IN ({placeholders})"
+                                # Handle DecimalField - cast to REAL for proper numeric comparison
+                                from .fields import DecimalField
+                                field_expr = field_name
+                                if hasattr(self.model, '_neutronapi_fields_') and field_name in self.model._neutronapi_fields_:
+                                    field_obj = self.model._neutronapi_fields_[field_name]
+                                    if isinstance(field_obj, DecimalField):
+                                        field_expr = f"CAST({field_name} AS REAL)"
+                                        # Also cast each placeholder
+                                        if self._is_sqlite:
+                                            cast_placeholders = ', '.join([f'CAST(? AS REAL)'] * len(converted_values))
+                                        else:
+                                            cast_placeholders = ', '.join(
+                                                [f'CAST(${i} AS REAL)' for i in range(param_counter, param_counter + len(converted_values))])
+                                        placeholders = cast_placeholders
+
+                                condition = f"{field_expr} IN ({placeholders})"
                                 parts.append(condition)
                                 params.extend(converted_values)
                                 param_counter += len(converted_values)
@@ -747,6 +769,16 @@ class QuerySet(Generic[T]):
                             if self._is_sqlite and lookup_type in ['iexact', 'icontains']:
                                 field_expr = f"LOWER({field_name})"
                                 value_expr = f"LOWER({placeholder})"
+
+                            # Handle DecimalField comparisons - cast to REAL for proper numeric comparison
+                            if lookup_type in ['exact', 'gt', 'gte', 'lt', 'lte']:
+                                from .fields import DecimalField
+                                if hasattr(self.model, '_neutronapi_fields_') and field_name in self.model._neutronapi_fields_:
+                                    field_obj = self.model._neutronapi_fields_[field_name]
+                                    if isinstance(field_obj, DecimalField):
+                                        # Cast both sides to REAL for proper numeric comparison
+                                        field_expr = f"CAST({field_name} AS REAL)"
+                                        value_expr = f"CAST({placeholder} AS REAL)"
 
                             condition = f"{field_expr} {op} {value_expr}"
                             parts.append(condition)
@@ -959,8 +991,15 @@ class QuerySet(Generic[T]):
                         json_expr = self._build_json_order_expression(field_name)
                         order_parts.append(f"{json_expr} {direction}")
                     else:
-                        # Regular field ordering
-                        order_parts.append(f"{field_name} {direction}")
+                        # Check if field is DecimalField and needs CAST for proper numeric ordering
+                        from .fields import DecimalField
+                        field_obj = self.model._neutronapi_fields_.get(field_name)
+                        if isinstance(field_obj, DecimalField):
+                            # Cast to REAL for proper numeric sorting (works for both SQLite and PostgreSQL)
+                            order_parts.append(f"CAST({field_name} AS REAL) {direction}")
+                        else:
+                            # Regular field ordering
+                            order_parts.append(f"{field_name} {direction}")
                 else:
                     # Legacy string format (for backward compatibility)
                     order_parts.append(order_item)
